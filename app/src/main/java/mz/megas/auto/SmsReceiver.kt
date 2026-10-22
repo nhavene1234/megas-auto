@@ -10,15 +10,22 @@ class SmsReceiver : BroadcastReceiver() {
         val msgs = Telephony.Sms.Intents.getMessagesFromIntent(i)
         if (msgs.isNullOrEmpty()) return
         val from = msgs[0].originatingAddress ?: return
-        if (!Config.trusted(from)) return                       // anti-fraude: so remetentes oficiais
-        val p = Parser.parse(msgs.joinToString("") { it.messageBody ?: "" }) ?: return  // formato exato
+        val body = msgs.joinToString("") { it.messageBody ?: "" }
+        val text = when {
+            Config.trusted(from) -> body                                   // SMS oficial neste telefone
+            Config.FORWARD_SECRET.isNotEmpty() && Config.forwarder(from) &&
+                body.startsWith(Config.FORWARD_SECRET) -> body.removePrefix(Config.FORWARD_SECRET) // reencaminhada do outro telefone
+            else -> return                                                  // anti-fraude
+        }
+        val p = Parser.parse(text) ?: return
 
         val db = Db(c); db.rollover()
         val mb = Config.PACKAGES[p.amount]
         val status = when { p.dest == null -> "REVIEW"; mb == null -> "INVALID"; else -> "PENDING" }
 
         // O ID e gravado ANTES de qualquer acao. PRIMARY KEY => duplicados sao ignorados.
-        if (!db.add(p.id, p.source, p.amount, p.payer, p.dest, mb, status)) return
+        if (!db.add(p.id, p.source, p.amount, p.payer, p.dest, mb, status)) { db.log("duplicado ignorado ${p.id}"); return }
+        db.log("SMS ${p.source} ${p.id} ${p.amount}MT -> ${p.dest} [$status]")
 
         when (status) {
             "PENDING" -> UssdService.poke()

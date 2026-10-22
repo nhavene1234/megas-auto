@@ -21,10 +21,11 @@ class MainActivity : Activity() {
         btn("Definir stock") { et.text.toString().toIntOrNull()?.let { Db(this).setKv("stock", it) }; refresh() }
         btn("1. Dar permissoes (SMS e chamadas)") {
             requestPermissions(arrayOf(Manifest.permission.RECEIVE_SMS, Manifest.permission.READ_SMS,
-                Manifest.permission.SEND_SMS, Manifest.permission.CALL_PHONE), 1)
+                Manifest.permission.SEND_SMS, Manifest.permission.CALL_PHONE, Manifest.permission.READ_PHONE_STATE), 1)
         }
         btn("2. Ativar servico de acessibilidade") { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
         btn("3. Desativar otimizacao de bateria") { startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)) }
+        btn("Reprocessar pedidos sem stock/SIM") { Db(this).retry(); UssdService.poke(); refresh() }
         btn("Atualizar") { refresh() }
         setContentView(ScrollView(this).apply { addView(l) })
     }
@@ -33,7 +34,8 @@ class MainActivity : Activity() {
 
     private fun refresh() {
         val d = Db(this); d.rollover()
-        info.text = "Stock: ${d.stock()} MB\nServico USSD: ${if (UssdService.instance != null) "ATIVO" else "DESLIGADO"}\n\n" +
-                "Ultimas vendas:\n" + d.recent(15).joinToString("\n")
+        info.text = "Stock: ${d.stock()} MB\nServico USSD: ${if (UssdService.instance != null) "ATIVO" else "DESLIGADO"}\nSIM Vodacom: ${if (Sim.handle(this) != null) "encontrada" else "NAO ENCONTRADA"}\n\n" +
+                "Ultimas vendas:\n" + d.recent(15).joinToString("\n") +
+                "\n\nRegisto:\n" + d.logs(12).joinToString("\n")
     }
 }

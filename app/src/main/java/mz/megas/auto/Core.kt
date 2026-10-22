@@ -5,6 +5,9 @@ import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
 import android.os.Build
+import android.telecom.PhoneAccountHandle
+import android.telecom.TelecomManager
+import android.telephony.TelephonyManager
 import android.telephony.SmsManager
 import java.text.SimpleDateFormat
 import java.util.*
@@ -12,6 +15,13 @@ import java.util.*
 object Config {
     // Nome do remetente das SMS (sem hifens/espacos, maiusculas). Confirme no seu telefone.
     val TRUSTED = setOf("MPESA", "EMOLA")
+
+    // Se os pagamentos chegam a OUTRO telefone que reencaminha a SMS para este:
+    // ponha aqui o numero desse telefone (so digitos, ex: "84xxxxxxx") e uma palavra secreta.
+    // O outro telefone deve enviar:  PALAVRASECRETA + texto da SMS original
+    val FORWARDERS = setOf<String>()
+    const val FORWARD_SECRET = ""
+    fun forwarder(sender: String) = sender.filter { it.isDigit() }.takeLast(9) in FORWARDERS
 
     // Tabela diaria: valor pago (MT) -> megas (MB)
     val PACKAGES = mapOf(25 to 1024, 50 to 2048, 125 to 5120, 250 to 10240)
@@ -56,13 +66,23 @@ object Parser {
     }
 }
 
-class Db(c: Context) : SQLiteOpenHelper(c, "vendas.db", null, 1) {
+class Db(c: Context) : SQLiteOpenHelper(c, "vendas.db", null, 2) {
     override fun onCreate(d: SQLiteDatabase) {
         d.execSQL("CREATE TABLE sales(id TEXT PRIMARY KEY, source TEXT, amount INT, payer TEXT, dest TEXT, mb INT, status TEXT, ts INT)")
         d.execSQL("CREATE TABLE kv(k TEXT PRIMARY KEY, v INT)")
+        d.execSQL("CREATE TABLE IF NOT EXISTS log(ts INT, t TEXT)")
         d.execSQL("INSERT INTO kv VALUES('stock',${Config.DAILY_RESET_MB}),('day',0)")
     }
-    override fun onUpgrade(d: SQLiteDatabase, o: Int, n: Int) {}
+    override fun onUpgrade(d: SQLiteDatabase, o: Int, n: Int) { d.execSQL("CREATE TABLE IF NOT EXISTS log(ts INT, t TEXT)") }
+
+    fun log(t: String) { writableDatabase.execSQL("INSERT INTO log VALUES(?,?)", arrayOf(System.currentTimeMillis(), t)) }
+    fun logs(n: Int): List<String> = readableDatabase.rawQuery("SELECT ts,t FROM log ORDER BY ts DESC LIMIT $n", null).use { c ->
+        val f = SimpleDateFormat("HH:mm:ss", Locale.US); val out = mutableListOf<String>()
+        while (c.moveToNext()) out.add("${f.format(Date(c.getLong(0)))} ${c.getString(1)}")
+        out
+    }
+    /** Volta a por na fila os pedidos parados por falta de stock ou de SIM. */
+    fun retry() { writableDatabase.execSQL("UPDATE sales SET status='PENDING' WHERE status IN ('NO_STOCK','NO_SIM')") }
 
     /** false se o ID ja existe (duplicado ou SMS repetida). */
     fun add(id: String, src: String, amount: Int, payer: String, dest: String?, mb: Int?, status: String): Boolean {
@@ -103,11 +123,35 @@ class Db(c: Context) : SQLiteOpenHelper(c, "vendas.db", null, 1) {
     }
 }
 
+/** Encontra a SIM Vodacom (MCC/MNC 64304) para o USSD e as SMS, sem perguntar qual usar. */
+object Sim {
+    private fun vodacom(t: TelephonyManager?) = t != null && (t.simOperator == "64304" || t.simOperatorName.contains("vodacom", true))
+
+    @Suppress("MissingPermission")
+    fun handle(c: Context): PhoneAccountHandle? = try {
+        val tele = c.getSystemService(TelecomManager::class.java)
+        val base = c.getSystemService(TelephonyManager::class.java)
+        tele.callCapablePhoneAccounts.firstOrNull { vodacom(base.createForPhoneAccountHandle(it)) }
+    } catch (e: Exception) { null }
+
+    fun subId(c: Context): Int? {
+        if (Build.VERSION.SDK_INT < 30) return null
+        val h = handle(c) ?: return null
+        val id = c.getSystemService(TelephonyManager::class.java).createForPhoneAccountHandle(h)?.subscriptionId
+        return if (id == null || id < 0) null else id
+    }
+}
+
 @Suppress("DEPRECATION")
 fun sendSms(c: Context, to: String, text: String) {
     if (to.isBlank()) return
     try {
-        val sm = if (Build.VERSION.SDK_INT >= 31) c.getSystemService(SmsManager::class.java) else SmsManager.getDefault()
+        val sub = Sim.subId(c)
+        val sm = when {
+            sub != null -> SmsManager.getSmsManagerForSubscriptionId(sub)
+            Build.VERSION.SDK_INT >= 31 -> c.getSystemService(SmsManager::class.java)
+            else -> SmsManager.getDefault()
+        }
         sm.sendMultipartTextMessage(to, null, sm.divideMessage(text), null, null)
     } catch (_: Exception) {}
 }

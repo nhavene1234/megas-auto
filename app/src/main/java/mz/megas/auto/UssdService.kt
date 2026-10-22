@@ -6,6 +6,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.telecom.TelecomManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 
@@ -31,6 +32,12 @@ class UssdService : AccessibilityService() {
         if (cur != null) return
         db.rollover()
         val s = db.nextPending() ?: return
+        val acc = Sim.handle(this)
+        if (acc == null) {
+            db.status(s.id, "NO_SIM"); db.log("${s.id}: SIM Vodacom nao encontrada")
+            sendSms(this, Config.OWNER_PHONE, "SEM SIM VODACOM para ${s.id}")
+            return next()
+        }
         if (!db.reserve(s.mb)) {
             db.status(s.id, "NO_STOCK")
             sendSms(this, s.payer, "Sem megas disponiveis de momento. Ref: ${s.id}. Entraremos em contacto.")
@@ -41,7 +48,9 @@ class UssdService : AccessibilityService() {
         steps = listOf("8", "2", s.mb.toString(), s.dest)
         db.status(s.id, "RUNNING")
         h.postDelayed(timeout, 60_000)
-        startActivity(Intent(Intent.ACTION_CALL, Uri.parse("tel:" + Uri.encode("*162#"))).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        db.log("${s.id}: USSD ${s.mb}MB -> ${s.dest}")
+        startActivity(Intent(Intent.ACTION_CALL, Uri.parse("tel:" + Uri.encode("*162#")))
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK).putExtra(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE, acc))
     }
 
     override fun onAccessibilityEvent(e: AccessibilityEvent) {
@@ -53,8 +62,7 @@ class UssdService : AccessibilityService() {
 
     private val react = Runnable {
         cur ?: return@Runnable
-        val root = rootInActiveWindow ?: return@Runnable
-        if (Config.DIALER_HINTS.none { root.packageName?.toString()?.contains(it) == true }) return@Runnable
+        val root = dialerRoot() ?: return@Runnable
         val nodes = ArrayList<AccessibilityNodeInfo>().also { walk(root, it) }
         val text = nodes.filter { it.className == "android.widget.TextView" }
             .joinToString(" ") { it.text?.toString() ?: "" }.trim()
@@ -82,6 +90,7 @@ class UssdService : AccessibilityService() {
 
     private fun finish(ok: Boolean?, info: String) {
         val s = cur ?: return
+        db.log("${s.id}: resultado=$ok | $info")
         h.removeCallbacks(timeout); h.removeCallbacks(react)
         when (ok) {
             true -> { db.status(s.id, "DONE"); sendSms(this, s.payer, "Megas enviados: ${s.mb}MB para ${s.dest}. Obrigado!") }
@@ -95,6 +104,15 @@ class UssdService : AccessibilityService() {
         }
         cur = null
         h.postDelayed({ next() }, 3000)
+    }
+
+    /** Procura a janela do USSD mesmo que outra (ex: notificacao de SMS) esteja em primeiro plano. */
+    private fun dialerRoot(): AccessibilityNodeInfo? {
+        for (w in windows) {
+            val r = w.root ?: continue
+            if (Config.DIALER_HINTS.any { r.packageName?.toString()?.contains(it) == true }) return r
+        }
+        return rootInActiveWindow?.takeIf { r -> Config.DIALER_HINTS.any { r.packageName?.toString()?.contains(it) == true } }
     }
 
     private fun dismiss(nodes: List<AccessibilityNodeInfo>) {
