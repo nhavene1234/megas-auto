@@ -43,6 +43,17 @@ object Config {
     // (mesmo que o cliente o tenha escrito no "Conteudo"). false = usa o Conteudo/numero de quem pagou.
     const val ALWAYS_ASK = true
 
+    // Palavra-chave: se um cliente enviar uma SMS com "megas", recebe as formas de pagamento
+    val KEYWORD = Regex("""\bmegas?\b""", RegexOption.IGNORE_CASE)
+    const val PAY_MESSAGE = "\uD83D\uDCF1*Formas de Pagamento Atualizadas*\uD83D\uDCF1 \uD83D\uDCB3\n" +
+            "Nome: *Nelson Francisco Nhavene*\n\n" +
+            "1. *M-PESA* \uD83D\uDCF1\n   - N\u00famero: 852980738\n\n" +
+            "2. *E-MOLA* \uD83D\uDCB8\n   - N\u00famero: 873505758\n" +
+            "Apos o pagamento mande o numero onde deseja receber os megas"
+    val PACKAGE_MESSAGE: String
+        get() = "Escolha o pacote que deseja e efetue o pagamento:\n" +
+                PACKAGES.entries.joinToString("\n") { "${it.key}MT = ${it.value / 1024}GB" }
+
     // Seu numero para receber alertas por SMS (ex: "84xxxxxxx"). Vazio = sem alertas.
     const val OWNER_PHONE = ""
 

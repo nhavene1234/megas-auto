@@ -3,12 +3,16 @@ package mz.megas.auto
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.os.Handler
+import android.os.Looper
 import android.provider.Telephony
 import java.util.Locale
 
 class SmsReceiver : BroadcastReceiver() {
     private val vodaNumber = Regex("""(?<!\d)(?:258)?(8[45]\d{7})(?!\d)""")
     private val anyNumber = Regex("""(?<!\d)(?:258)?8\d{8}(?!\d)""")
+
+    companion object { private val lastInfo = HashMap<String, Long>() }
 
     override fun onReceive(c: Context, i: Intent) {
         val msgs = Telephony.Sms.Intents.getMessagesFromIntent(i)
@@ -48,6 +52,17 @@ class SmsReceiver : BroadcastReceiver() {
         }
     }
 
+    /** Envia as formas de pagamento e, passado um pouco, a lista de pacotes (no maximo 1 vez por 5 minutos por cliente). */
+    private fun sendPaymentInfo(c: Context, to: String, key: String) {
+        val now = System.currentTimeMillis()
+        if (now - (lastInfo[key] ?: 0L) < 5 * 60_000L) return
+        lastInfo[key] = now
+        val app = c.applicationContext
+        Db(app).log("formas de pagamento enviadas para $key")
+        sendSms(app, to, Config.PAY_MESSAGE)
+        Handler(Looper.getMainLooper()).postDelayed({ sendSms(app, to, Config.PACKAGE_MESSAGE) }, 5000)
+    }
+
     /** Cliente responde com o numero de destino (so de numeros normais; ignora operadoras). */
     private fun customerSms(c: Context, from: String, body: String) {
         val digits = from.filter { it.isDigit() }
@@ -56,6 +71,11 @@ class SmsReceiver : BroadcastReceiver() {
         val db = Db(c)
         val dest = vodaNumber.find(body)?.groupValues?.get(1)
         if (dest == null) {
+            if (Config.KEYWORD.containsMatchIn(body)) {
+                if (db.hasReview(payer9)) sendSms(c, from, "Recebemos o seu pagamento. Envie o numero Vodacom que vai receber os megas.")
+                else sendPaymentInfo(c, from, payer9)
+                return
+            }
             if (anyNumber.containsMatchIn(body) && db.hasReview(payer9))
                 sendSms(c, from, "Numero invalido. Envie um numero Vodacom (comeca por 84 ou 85).")
             return

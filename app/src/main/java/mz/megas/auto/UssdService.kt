@@ -28,7 +28,7 @@ class UssdService : AccessibilityService() {
     private var lastNote = ""
     private val balanceRx = Regex("""Saldo de dados:\s*([\d.,]+)\s*(MB|GB)""", RegexOption.IGNORE_CASE)
 
-    private val tick = object : Runnable { override fun run() { next(); h.postDelayed(this, 600_000) } }
+    private val tick: Runnable = object : Runnable { override fun run() { next(); h.postDelayed(this, 600_000) } }
 
     override fun onServiceConnected() { instance = this; db = Db(this); db.markStuck(); h.post(tick) }
     override fun onDestroy() { h.removeCallbacks(tick); instance = null; super.onDestroy() }
@@ -65,7 +65,7 @@ class UssdService : AccessibilityService() {
         h.removeCallbacks(react); h.postDelayed(react, 500)
     }
 
-    private val react = Runnable {
+    private val react: Runnable = Runnable {
         val s = cur ?: return@Runnable
         val root = dialerRoot() ?: return@Runnable
         val nodes = ArrayList<AccessibilityNodeInfo>().also { walk(root, it) }
@@ -115,7 +115,7 @@ class UssdService : AccessibilityService() {
     }
 
     /** Se o ecra nao mudou depois de enviar, repete o passo (ate 2 vezes). */
-    private val stall = Runnable {
+    private val stall: Runnable = Runnable {
         val s = cur ?: return@Runnable
         if (retries >= 2) { performGlobalAction(GLOBAL_ACTION_BACK); finish(null, "nao avancou no passo $step"); return@Runnable }
         retries++; step--; lastText = ""
@@ -123,7 +123,7 @@ class UssdService : AccessibilityService() {
         react.run()
     }
 
-    private val timeout = Runnable { performGlobalAction(GLOBAL_ACTION_BACK); finish(null, "tempo esgotado") }
+    private val timeout: Runnable = Runnable { performGlobalAction(GLOBAL_ACTION_BACK); finish(null, "tempo esgotado") }
 
     private fun finish(ok: Boolean?, info: String) {
         val s = cur ?: return
