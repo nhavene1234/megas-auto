@@ -67,12 +67,15 @@ class UssdService : AccessibilityService() {
 
     private val react: Runnable = Runnable {
         val s = cur ?: return@Runnable
-        val root = dialerRoot() ?: return@Runnable
-        val nodes = ArrayList<AccessibilityNodeInfo>().also { walk(root, it) }
-        val input = nodes.firstOrNull { it.isEditable || it.className?.toString()?.contains("EditText") == true }
-        val body = nodes.filter { !it.isEditable && !it.isClickable && !it.text.isNullOrBlank() }
-            .joinToString(" ") { it.text.toString() }.trim()
-        val text = body.ifEmpty { nodes.joinToString(" ") { it.text?.toString() ?: "" }.trim() }
+        val sn = snap() ?: return@Runnable
+        val nodes = sn.nodes
+        val input = sn.input
+        val text = sn.text
+        // Caixa "USSD code running..." (a carregar): espera. NAO e a resposta final.
+        if (input == null && sn.loading) {
+            if (step > 0) { h.removeCallbacks(stall); h.postDelayed(stall, 20_000) }
+            return@Runnable
+        }
         if (text.isEmpty() || text == lastText) return@Runnable
         lastText = text; h.removeCallbacks(stall); retries = 0
         db.log("passo $step/${steps.size}: " + text.take(70))
@@ -117,6 +120,8 @@ class UssdService : AccessibilityService() {
     /** Se o ecra nao mudou depois de enviar, repete o passo (ate 2 vezes). */
     private val stall: Runnable = Runnable {
         val s = cur ?: return@Runnable
+        val now = snap()
+        if (now != null && now.text != lastText) { react.run(); return@Runnable }   // o ecra ja mudou: processa-o
         if (retries >= 2) { performGlobalAction(GLOBAL_ACTION_BACK); finish(null, "nao avancou no passo $step"); return@Runnable }
         retries++; step--; lastText = ""
         db.log("${s.id}: sem resposta, a repetir passo $step (tentativa $retries)")
@@ -151,6 +156,20 @@ class UssdService : AccessibilityService() {
         sendSms(this, Config.OWNER_PHONE, "SALDO INSUFICIENTE (${bal}MB) para ${s.id} ${s.mb}MB")
         cur = null
         h.postDelayed({ next() }, 3000)
+    }
+
+    private class Snap(val nodes: List<AccessibilityNodeInfo>, val input: AccessibilityNodeInfo?, val text: String, val loading: Boolean)
+
+    private fun snap(): Snap? {
+        val root = dialerRoot() ?: return null
+        val nodes = ArrayList<AccessibilityNodeInfo>().also { walk(root, it) }
+        val input = nodes.firstOrNull { it.isEditable || it.className?.toString()?.contains("EditText") == true }
+        val body = nodes.filter { !it.isEditable && !it.isClickable && !it.text.isNullOrBlank() }
+            .joinToString(" ") { it.text.toString() }.trim()
+        val text = body.ifEmpty { nodes.joinToString(" ") { it.text?.toString() ?: "" }.trim() }
+        val loading = nodes.any { it.className?.toString()?.contains("ProgressBar") == true } ||
+                Regex("ussd code running|c.digo ussd em execu|a executar|executando", RegexOption.IGNORE_CASE).containsMatchIn(text)
+        return Snap(nodes, input, text, loading)
     }
 
     private fun note(t: String) { if (t != lastNote) { lastNote = t; db.log(t) } }
