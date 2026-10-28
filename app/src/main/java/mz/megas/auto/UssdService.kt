@@ -6,6 +6,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
 import android.telecom.TelecomManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
@@ -26,6 +27,7 @@ class UssdService : AccessibilityService() {
     private var steps = listOf<String>()
     private var lastText = ""
     private var lastNote = ""
+    private var wl: PowerManager.WakeLock? = null
     private val balanceRx = Regex("""Saldo de dados:\s*([\d.,]+)\s*(MB|GB)""", RegexOption.IGNORE_CASE)
 
     private val tick: Runnable = object : Runnable { override fun run() { next(); h.postDelayed(this, 600_000) } }
@@ -55,6 +57,7 @@ class UssdService : AccessibilityService() {
         steps = listOf("8", "2", s.mb.toString(), s.dest)
         db.status(s.id, "RUNNING")
         db.log("${s.id}: a iniciar USSD ${s.mb}MB -> ${s.dest}")
+        wakeScreen()
         h.postDelayed(timeout, 90_000)
         startActivity(Intent(Intent.ACTION_CALL, Uri.parse("tel:" + Uri.encode("*162#")))
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK).putExtra(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE, acc))
@@ -133,11 +136,12 @@ class UssdService : AccessibilityService() {
     private fun finish(ok: Boolean?, info: String) {
         val s = cur ?: return
         db.log("${s.id}: resultado=$ok | $info")
+        releaseScreen()
         h.removeCallbacks(timeout); h.removeCallbacks(react); h.removeCallbacks(stall)
         when (ok) {
-            true -> { db.incSent(); db.status(s.id, "DONE"); sendSms(this, s.payer, "Megas enviados: ${s.mb}MB para ${s.dest}. Obrigado!") }
+            true -> { db.incSent(); db.status(s.id, "DONE"); Orders.afterTransfer(this, s) }
             false -> {
-                db.refund(s.mb); db.status(s.id, "FAILED")
+                db.refund(s.mb); db.restoreCredit(s.payer.takeLast(9), s.mb); db.status(s.id, "FAILED")
                 sendSms(this, s.payer, "Nao foi possivel enviar os megas agora. Ref: ${s.id}. Vamos resolver.")
                 sendSms(this, Config.OWNER_PHONE, "FALHOU ${s.id}: $info")
             }
@@ -151,6 +155,7 @@ class UssdService : AccessibilityService() {
     private fun noStock(s: Sale, bal: Int) {
         h.removeCallbacks(timeout); h.removeCallbacks(stall)
         db.setKv("stock", bal); db.status(s.id, "NO_STOCK")
+        releaseScreen()
         db.log("${s.id}: saldo $bal MB menor que ${s.mb} MB")
         sendSms(this, s.payer, "Sem megas disponiveis de momento. Ref: ${s.id}. Entraremos em contacto.")
         sendSms(this, Config.OWNER_PHONE, "SALDO INSUFICIENTE (${bal}MB) para ${s.id} ${s.mb}MB")
@@ -171,6 +176,18 @@ class UssdService : AccessibilityService() {
                 Regex("ussd code running|c.digo ussd em execu|a executar|executando", RegexOption.IGNORE_CASE).containsMatchIn(text)
         return Snap(nodes, input, text, loading)
     }
+
+    /** Acorda o ecra durante a venda (so ajuda se o bloqueio estiver em "Nenhum" ou "Deslizar"). */
+    @Suppress("DEPRECATION")
+    private fun wakeScreen() {
+        try {
+            releaseScreen()
+            val pm = getSystemService(PowerManager::class.java)
+            wl = pm.newWakeLock(PowerManager.SCREEN_BRIGHT_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP, "megas:ussd")
+            wl?.acquire(120_000L)
+        } catch (_: Exception) {}
+    }
+    private fun releaseScreen() { try { wl?.let { if (it.isHeld) it.release() } } catch (_: Exception) {}; wl = null }
 
     private fun note(t: String) { if (t != lastNote) { lastNote = t; db.log(t) } }
     private fun isUssd(pkg: String?) = pkg != null && Config.DIALER_HINTS.any { pkg.contains(it) } && Config.NOT_USSD.none { pkg.contains(it) }
